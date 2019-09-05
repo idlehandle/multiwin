@@ -6,7 +6,6 @@ from tkinter import messagebox
 
 # TODO:
 # Features to add:
-#   - Proportional movement: x // mon_x = new_x
 #   - override default, smaller window
 #   - Smaller font for ALL display
 #   - add logger
@@ -122,8 +121,10 @@ class Window:
         # Check through Monitors
         for i, monitor in enumerate(self.master.monitors):
             if x in monitor.x_range:
-                return i, monitor
-        return -1, None
+                offset_x = (self.info().rectangle.left - monitor.x) / len(monitor.x_range)
+                offset_y = (self.info().rectangle.top - monitor.y) / len(monitor.y_range)
+                return i, monitor, offset_x, offset_y
+        return -1, None, 0, 0
 
     def _lock_functions(self, *args):
         # Disable row when item is locked
@@ -154,7 +155,10 @@ class Window:
                 if maxed:
                     self.wrapper().restore()
                 monitor = GUI.monitors[pos]
-                self.wrapper().move_window(monitor.x + 5, monitor.y + 5)
+                self.wrapper().move_window(
+                    monitor.x + round(len(monitor.x_range) * cur_pos[2]),
+                    monitor.y + round(len(monitor.y_range) * cur_pos[3])
+                )
                 if maxed:
                     self.wrapper().maximize()
                     self.set_focus_keep_cursor()
@@ -178,9 +182,6 @@ class Window:
     def wrapper(self):
         return pyw.controls.hwndwrapper.HwndWrapper(self.hwnd)
 
-    # def delete(self):
-    #     Window.hwnds.remove(self.hwnd)
-
 
 class Monitor:
     min_x = 0
@@ -189,7 +190,7 @@ class Monitor:
     def __init__(self, hwnd):
         self.info = pyw.win32api.GetMonitorInfo(hwnd[0])
         self.name = self.info.get('Device').strip(r'\.')
-        self.x, self.y, self.w, self.h = self.info.get('Work')
+        self.x, self.y, self.w, self.h = self.info.get('Monitor')
         self.x_range = range(self.x, self.w)
         self.y_range = range(self.y, self.h)
         Monitor.min_x = min(Monitor.min_x, self.x)

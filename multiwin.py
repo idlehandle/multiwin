@@ -58,12 +58,9 @@ class Window:
         )
         self.btn_lock.bind('<Button-2>', lambda evt: self.set_focus_keep_cursor())
         self.btn_lock.bind('<Button-3>', self.binding_close_window)
-        self.btn_lock.bind('<Enter>', lambda evt, win=self.name: self._change_hover_text(win))
-        self.btn_lock.bind('<Leave>', lambda evt: self._change_hover_text(''))
+        self.btn_lock.bind('<Enter>', lambda evt, win=self.name: self.master._change_hover_text(win))
+        self.btn_lock.bind('<Leave>', lambda evt: self.master._change_hover_text(''))
         self._is_resetting = False
-
-    def _change_hover_text(self, value):
-        self.master.window_expanded_name = value
 
     def create_maximize_button(self, process_group):
         self._is_resetting = True
@@ -164,7 +161,7 @@ class Window:
                 )
                 if maxed:
                     self.wrapper().maximize()
-                    self.set_focus_keep_cursor()
+                self.set_focus_keep_cursor()
             self.get_current_value()
 
     def set_focus_keep_cursor(self):
@@ -294,14 +291,21 @@ class GUI(tk.Tk):
             self._job = None
         self.destroy()
 
+    def _change_hover_text(self, value):
+        self.window_expanded_name = value
+        if self.window_expanded_name:
+            self.status_bar.configure(background='light goldenrod')
+            self.after_cancel(self._update_job)
+            self.status.set(self.window_expanded_name)
+        else:
+            self.status_bar.configure(background='SystemButtonFace')
+            self._update_status()
+
     def _update_status(self, delay=1000):
         pid = psutil.Process()
         mem = pid.memory_full_info()[-1] / 2**20  # Memory in MB
         cpu = pid.cpu_percent()
-        if self.window_expanded_name:
-            status_string = self.window_expanded_name
-        else:
-            status_string = f'Next refresh: {self.next_refresh} | Last refreshed: {self.last_refreshed} | cpu: {cpu} % | memory: {mem:,.2f} MB '
+        status_string = f'Next refresh: {self.next_refresh} | Last refreshed: {self.last_refreshed} | cpu: {cpu} % | memory: {mem:,.2f} MB '
         self.status.set(status_string)
         self._update_job = self.after(ms=delay, func=self._update_status)
 

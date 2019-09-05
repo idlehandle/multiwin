@@ -296,10 +296,14 @@ class GUI(tk.Tk):
         if self.window_expanded_name:
             self.status_bar.configure(background='light goldenrod')
             self.after_cancel(self._update_job)
+            self._update_job = None
             self.status.set(self.window_expanded_name)
+            self.status_bar.configure(anchor=tk.W)
         else:
             self.status_bar.configure(background='SystemButtonFace')
-            self._update_status()
+            self.status_bar.configure(anchor=tk.E)
+            if self._update_job is None:
+                self._update_status()
 
     def _update_status(self, delay=1000):
         pid = psutil.Process()

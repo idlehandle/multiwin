@@ -12,6 +12,7 @@ Require `pywinauto` and `psutil`
 3. Close / focus windows
 4. Auto refresh list of windows based on preset frequencies
 5. Status bar with scheduled refresh and self monitor to see memory/CPU usage
+6. Proportional movement between displays, e.g. if window is near top left of `DISPLAY1`, it will move to top left of `DISPLAY2`
 
 # Usage
 1. Left click on Windows to lock the maximize/display buttons
@@ -20,8 +21,13 @@ Require `pywinauto` and `psutil`
 4. Left click on individual displays to move the associated window to the display
 5. Right click on individual display to move ALL windows in the same process (e.g. Excel.exe) to the same display
 
+# Caveats (Known imperfections)
+- Python itself crashes after the tool is exited.  I suspect this has to do with `tkinter` not being disposed properly in the background but need to dive further down as the error isn't caught inside Python, but post execution.
+- Some temp/back processes still get picked up by the tool, these needs to be weeded out in `exclusions` condition
+- Currently only support Windows, no plan for other OS at the moment
+- Currently only support horizontally aligned similar displays, not yet tested on vertical displays with varying resolution/orientation (but it *should* work)
+
 # Future enhancements (TBD)
-- Proportional movement: `new_x = x // mon_x`
 - override default, smaller UI
 - add logger
 - add config to save lock statuses

@@ -20,6 +20,7 @@ Require `pywinauto` and `psutil`
 3. Right click to close (some windows might require saving)
 4. Left click on individual displays to move the associated window to the display
 5. Right click on individual display to move ALL windows in the same process (e.g. Excel.exe) to the same display
+6. Hover on top of Windows name to see full name in status bar
 
 # Caveats (Known imperfections)
 - Python itself crashes after the tool is exited.  I suspect this has to do with `tkinter` not being disposed properly in the background but need to dive further down as the error isn't caught inside Python, but post execution.
@@ -32,5 +33,4 @@ Require `pywinauto` and `psutil`
 - add logger
 - add config to save lock statuses
 - Some extra window management - always on top
-- add tooltip style hover text over window names that have been truncated (maybe in status bar)
 - process monitor to see Mem/CPU usage on processes

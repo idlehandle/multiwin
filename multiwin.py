@@ -2,10 +2,11 @@ import psutil
 import datetime
 import tkinter as tk
 import pywinauto as pyw
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 
 # TODO:
 # Features to add:
+#   - add exclusion manager, possibly using json.  Explore in-app editing
 #   - override default, smaller window
 #   - Smaller font for ALL display
 #   - add logger
@@ -58,6 +59,8 @@ class Window:
         )
         self.btn_lock.bind('<Button-2>', lambda evt: self.set_focus_keep_cursor())
         self.btn_lock.bind('<Button-3>', self.binding_close_window)
+        self.btn_lock.bind('<Control-Button-3>', lambda evt, ex_typ='name', ex_name=self.name: self.master.exclude_item(ex_typ, ex_name))
+        self.btn_lock.bind('<Control-Shift-Button-3>', lambda evt, ex_typ='process_name', ex_name=self.process_name: self.master.exclude_item(ex_typ, ex_name))
         self.btn_lock.bind('<Enter>', lambda evt, win=self.name: self.master._change_hover_text(win))
         self.btn_lock.bind('<Leave>', lambda evt: self.master._change_hover_text(''))
         self._is_resetting = False
@@ -105,7 +108,7 @@ class Window:
     def binding_close_window(self, event):
         if messagebox.askyesnocancel('Close Window', f'Close this window?\n{self.name}'):
             try:
-                self.wrapper().close()
+                self.with_cursor_position(self.wrapper().close_alt_f4)
             except Exception as e:
                 print(e)
             self.master.refresh(manual_call=True)
@@ -161,12 +164,12 @@ class Window:
                 )
                 if maxed:
                     self.wrapper().maximize()
-                self.set_focus_keep_cursor()
+                self.with_cursor_position(self.wrapper().set_focus)
             self.get_current_value()
 
-    def set_focus_keep_cursor(self):
+    def with_cursor_position(self, func):
         cursor_pos = pyw.win32api.GetCursorPos()
-        self.wrapper().set_focus()
+        func()
         pyw.win32api.SetCursorPos(cursor_pos)
 
     def get_current_value(self):
@@ -198,6 +201,39 @@ class Monitor:
         Monitor.max_x = max(Monitor.max_x, self.w)
 
 
+class Config:
+    # Class for advance management of config and exclusions
+
+    # Enhancement - update this so that name is nested under process_name for process specific name exlcusions
+    default_exclusions = {
+        'name': ['Program Manager', '', ' '],
+        'process_name': ['ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe']
+    }
+
+    def __init__(self, excl: dict=None):
+        # self.path = __file__
+        self.exclusions = Config.default_exclusions
+        if excl:
+            self.exclusions.update(excl)
+
+    def add_exclusion(self, attr: str, value: str):
+        excl_list = self.exclusions.get(attr, None)
+        if excl_list is not None:
+            excl_list.append(value)
+
+    def load(self):
+        pass
+
+    def save(self):
+        pass
+
+    def is_excluded(self, window):
+        if self.exclusions:
+            return any(getattr(window, attr, '!No Attribute!') in cond for attr, cond in self.exclusions.items())
+        else:
+            return False
+
+
 # main GUI
 class GUI(tk.Tk):
 
@@ -216,21 +252,24 @@ class GUI(tk.Tk):
         ('60 min', 60 * default_min),
         ('Never', -1)
     ]
-    # is_perpetuating = True
+    mini_resolution = '120x60'
 
     def __init__(self):
         # Initial settings
         super().__init__()
         self.title("Multi Window Manager")
-        self._job = None
-        self._update_job = None
+        self._job_perpetuate = None
+        self._job_update = None
+        self._job_minimize = None
         self.protocol("WM_DELETE_WINDOW", self._seek_and_destroy)
         self.windows = dict()
+        self.active_transparency = 0.8                          # default active transparency rate
+        self.inactive_transparency = 0.1                        # default inactive transparency rate
 
         # tk variables and trace bindings
         self.freq_index = tk.IntVar()
         self.freq_index.trace_add('write', self._update_freq)
-        self.freq_index.set(2)  # default frequency pair
+        self.freq_index.set(2)                                  # default frequency pair
         self.stay_on_top = tk.BooleanVar()
         self.stay_on_top.set(False)
         self.stay_on_top.trace_add('write', callback=self._update_topmost)
@@ -251,6 +290,7 @@ class GUI(tk.Tk):
                 command=lambda i=idx, f=freq: self.set_freq(i, f)
             )
         win_bar.add_checkbutton(label='Stay atop', underline=0, variable=self.stay_on_top)
+        win_bar.add_command(label='Set Transparency', command=self._set_transparency)
         win_bar.add_command(label='Tiny', underline=0, command=self.iconify)
         win_bar.add_command(label='Exit', underline=1, command=self._seek_and_destroy)
 
@@ -264,6 +304,10 @@ class GUI(tk.Tk):
         self.bind('<<Alt_L-S>>', lambda: self.stay_on_top.set(not self.stay_on_top.get()))
         self.bind('<<Alt_L-X>>', self._seek_and_destroy)
         self.bind('<<Alt_L-T>>', self.iconify)
+        self.bind('<FocusIn>', self._got_focus)
+        self.bind('<FocusOut>', self._lost_focus)
+        self.bind('<Enter>', self._mouse_enter)
+        self.bind('<Leave>', self._mouse_leave)
 
         # set up status bar
         self._pid = psutil.Process().pid
@@ -276,33 +320,78 @@ class GUI(tk.Tk):
             anchor=tk.E
         )
         self.status_bar.pack(expand=True, fill=tk.X, side=tk.BOTTOM)
+
+        # Manage Exclusions
+        self.cfg = Config()
+        # self.process_exclusions = {
+        #     'name': ['Program Manager', '', ' '],
+        #     'process_name': ['ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe']
+        # }
+
+        # initial start
         self.refresh(manual_call=True)
         self._update_status()
 
+    # Decorator class for binding check
+    def __toplevel_check(function):
+        def level_check(self, event):
+            if event.widget == self:
+                function(self, event)
+        return level_check
+
+    @__toplevel_check
+    def _got_focus(self, event):
+        if self.stay_on_top.get():
+            self.wm_attributes('-alpha', self.active_transparency)
+        else:
+            self.wm_attributes('-alpha', 1.0)
+
+    @__toplevel_check
+    def _lost_focus(self, event):
+        if self.stay_on_top.get():
+            self.wm_attributes('-alpha', self.inactive_transparency)
+        else:
+            self.wm_attributes('-alpha', self.active_transparency)
+
+    @__toplevel_check
+    def _mouse_enter(self, event):
+        if self._job_minimize is not None:
+            self.after_cancel(self._job_minimize)
+            self._job_minimize = None
+        self.geometry('')
+        self.refresh(manual_call=True)
+
+    @__toplevel_check
+    def _mouse_leave(self, event):
+        if self.wm_attributes('-topmost'):
+            self._job_minimize = self.after(ms=10000, func=lambda: self.geometry(GUI.mini_resolution))
+
     def _update_topmost(self, name, index, operation):
-        self.wm_attributes('-topmost', self.stay_on_top.get())
+        state = self.stay_on_top.get()
+        self.wm_attributes('-topmost', state)
+        self.wm_attributes('-alpha', self.active_transparency if state else 1)
 
     def _seek_and_destroy(self):
-        if self._update_job is not None:
-            self.after_cancel(self._update_job)
-            self._update_job = None
-        if self._job is not None:
-            self.after_cancel(self._job)
-            self._job = None
+        if self._job_update is not None:
+            self.after_cancel(self._job_update)
+            self._job_update = None
+        if self._job_perpetuate is not None:
+            self.after_cancel(self._job_perpetuate)
+            self._job_perpetuate = None
         self.destroy()
 
     def _change_hover_text(self, value):
         self.window_expanded_name = value
         if self.window_expanded_name:
             self.status_bar.configure(background='light goldenrod')
-            self.after_cancel(self._update_job)
-            self._update_job = None
+            self.after_cancel(self._job_update)
+            self._job_update = None
             self.status.set(self.window_expanded_name)
             self.status_bar.configure(anchor=tk.W)
         else:
             self.status_bar.configure(background='SystemButtonFace')
             self.status_bar.configure(anchor=tk.E)
-            if self._update_job is None:
+            if self._job_update is None:
                 self._update_status()
 
     def _update_status(self, delay=1000):
@@ -311,7 +400,7 @@ class GUI(tk.Tk):
         cpu = pid.cpu_percent()
         status_string = f'Next refresh: {self.next_refresh} | Last refreshed: {self.last_refreshed} | cpu: {cpu} % | memory: {mem:,.2f} MB '
         self.status.set(status_string)
-        self._update_job = self.after(ms=delay, func=self._update_status)
+        self._job_update = self.after(ms=delay, func=self._update_status)
 
     def set_freq(self, idx, freq):
         self.freq_index.set(idx)
@@ -321,16 +410,40 @@ class GUI(tk.Tk):
     def _update_freq(self, *args):
         self.refresh_freq = GUI.preset_freqs[self.freq_index.get()][1]
 
+    def _set_transparency(self):
+        transparency = simpledialog.askfloat(
+            'Set Transparency Rate',
+            'Set Transparency Rate:\r\nMinimum 0.1\nMaximum of 1.0',
+            initialvalue=self.active_transparency,
+            minvalue=0.1,
+            maxvalue=1.0
+        )
+        self.active_transparency = transparency
+        if self.stay_on_top.get():
+            self.wm_attributes('-alpha', self.active_transparency)
+
+    def exclude_item(self, exclude_type, exclude_name):
+        exclude_descriptions = {
+            'process_name': 'all Windows under this process type',
+            'name': 'all Windows with this name'
+        }
+        if messagebox.askyesnocancel(
+            'Add Exclusion',
+            f'Hide {exclude_type}?:\n{exclude_name}'
+        ):
+            self.cfg.add_exclusion(exclude_type, exclude_name)
+            self.refresh(manual_call=True)
+
     def perpetuate(self, reset=False):
         if reset:
-            if self._job is not None:
-                self.after_cancel(self._job)
-                self._job = None
+            if self._job_perpetuate is not None:
+                self.after_cancel(self._job_perpetuate)
+                self._job_perpetuate = None
             if self.refresh_freq >= 0:
-                self._job = self.after(ms=self.refresh_freq, func=self.perpetuate)
+                self._job_perpetuate = self.after(ms=self.refresh_freq, func=self.perpetuate)
         else:
             self.refresh(keep_perpetuate=False)
-            self._job = self.after(ms=self.refresh_freq, func=self.perpetuate)
+            self._job_perpetuate = self.after(ms=self.refresh_freq, func=self.perpetuate)
 
     # Allow user to refresh the screen without closing the program
     def refresh(self, manual_call=False, keep_perpetuate=True):
@@ -343,36 +456,41 @@ class GUI(tk.Tk):
         self.get_windows()
         self.create_windows()
         self.main_frame.pack(expand=True, fill=tk.X, side=tk.TOP)
-        self.last_refreshed = datetime.datetime.now().strftime('%H:%M:%S')
-        self.next_refresh = datetime.datetime.strftime(datetime.datetime.now() + datetime.timedelta(seconds=self.refresh_freq // 1000), '%H:%M:%S')
+        now = datetime.datetime.now()
+        self.last_refreshed = now.strftime('%H:%M:%S')
+        self.next_refresh = datetime.datetime.strftime(now + datetime.timedelta(seconds=self.refresh_freq // 1000), '%H:%M:%S')
         if keep_perpetuate:
             self.perpetuate(reset=manual_call)
 
     # Find all the visible windows and create Window instances
-    def get_windows(self):
-        wins = set(w for w in pyw.findwindows.find_windows())
+    def get_windows(self, retry=0):
+        if retry <= 3:
+            wins = set(w for w in pyw.findwindows.find_windows())
 
-        # Add new to Window instances
-        self.windows = {win: self.windows.get(win, Window(win, self)) for win in wins}
+            # Add new to Window instances
+            # This try seem to slow down the process just enough to avoid the error it's trying to catch...
+            try:
+                self.windows = {win: self.windows.get(win, Window(win, self)) for win in wins}
+            except pyw.controls.hwndwrapper.InvalidWindowHandle as e:
+                print(e)
+                print(f'retrying {retry}...')
+                self.get_windows(retry + 1)
+
+        # maybe do something if it fails after 3 times...
 
     def create_windows(self):
-        # process groups dictionary for display settings
+        # (Re)initiate dictionary to group windows by process name
         self.process_groups = dict()
-
-        # Manage Exclusions
-        exclusions = {
-            'name': ('Program Manager', '', ' '),
-            'process_name': ('ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe')
-        }
 
         for row, window in enumerate(sorted(self.windows.values(), key=lambda w: (w.process_name, w.name))):
 
-            # Exclusions
-            # Don't need Program Manager and hidden services
-            if any(getattr(window, attr) in cond for attr, cond in exclusions.items()):
+            # Exclude certain names/processes
+            # if any(getattr(window, attr) in cond for attr, cond in self.process_exclusions.items()):
+            #     continue
+            if self.cfg.is_excluded(window):
                 continue
 
-            # group processes
+            # process label frame
             if self.process_groups.get(window.process_name) is None:
                 process_group = tk.LabelFrame(
                     self.main_frame,

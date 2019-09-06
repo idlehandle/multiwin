@@ -24,6 +24,7 @@ Require `pywinauto` and `psutil`
 
 # Caveats (Known imperfections)
 - Python itself crashes after the tool is exited.  I suspect this has to do with `tkinter` not being disposed properly in the background but need to dive further down as the error isn't caught inside Python, but post execution.
+  - This is in relation to the combination of `tkinter` + `pywinauto`.  Submitted issue under `pywinauto`: https://github.com/pywinauto/pywinauto/issues/813
 - Some temp/back processes still get picked up by the tool, these needs to be weeded out in `exclusions` condition
 - Currently only support Windows, no plan for other OS at the moment
 - Currently only support horizontally aligned similar displays, not yet tested on vertical displays with varying resolution/orientation (but it *should* work)

@@ -1,17 +1,21 @@
+import json
 import psutil
 import datetime
 import tkinter as tk
 import pywinauto as pyw
+from os import path
 from tkinter import messagebox, simpledialog
+
 
 # TODO:
 # Features to add:
-#   - add exclusion manager, possibly using json.  Explore in-app editing
-#   - override default, smaller window
+#   - move some GUI configs to config file
 #   - Smaller font for ALL display
 #   - add logger
-#   - add config to save lock statuses
 #   - Some window management - always on top (close and pop up added)
+#   - DONE: override default, smaller window
+#   - DONE: add config to save lock statuses
+#   - DONE: add exclusion manager, possibly using json.  Explore in-app editing
 
 
 class Window:
@@ -21,6 +25,7 @@ class Window:
         True: 'Maximized',
         False: 'Windowed'
     }
+    delim = chr(215) + chr(247) + chr(215)
 
     def __init__(self, hwnd, master):
         # Basic info
@@ -33,6 +38,7 @@ class Window:
             self.short_name = self.name
         self.process_id = self.wrapper().process_id()
         self.process_name = psutil.Process(self.process_id).name()
+        self.name_with_process = Window.delim.join((str(self.process_name), str(self.name)))
         self._is_resetting = False
 
         # Variables
@@ -59,8 +65,9 @@ class Window:
         )
         self.btn_lock.bind('<Button-2>', lambda evt: self.set_focus_keep_cursor())
         self.btn_lock.bind('<Button-3>', self.binding_close_window)
-        self.btn_lock.bind('<Control-Button-3>', lambda evt, ex_typ='name', ex_name=self.name: self.master.exclude_item(ex_typ, ex_name))
-        self.btn_lock.bind('<Control-Shift-Button-3>', lambda evt, ex_typ='process_name', ex_name=self.process_name: self.master.exclude_item(ex_typ, ex_name))
+        self.btn_lock.bind('<Control-Shift-Button-3>', lambda evt, ex_win=self, ex_typ='name_with_process': self.master.cfg.exclude_item(ex_typ, ex_win))
+        self.btn_lock.bind('<Control-Button-3>', lambda evt, ex_win=self, ex_typ='process_name': self.master.cfg.exclude_item(ex_typ, ex_win))
+        self.btn_lock.bind('<Shift-Button-3>', lambda evt, ex_win=self, ex_typ='name': self.master.cfg.exclude_item(ex_typ, ex_win))
         self.btn_lock.bind('<Enter>', lambda evt, win=self.name: self.master._change_hover_text(win))
         self.btn_lock.bind('<Leave>', lambda evt: self.master._change_hover_text(''))
         self._is_resetting = False
@@ -108,7 +115,7 @@ class Window:
     def binding_close_window(self, event):
         if messagebox.askyesnocancel('Close Window', f'Close this window?\n{self.name}'):
             try:
-                self.with_cursor_position(self.wrapper().close_alt_f4)
+                self.anchored_cursor_wrapper(self.wrapper().close_alt_f4)
             except Exception as e:
                 print(e)
             self.master.refresh(manual_call=True)
@@ -164,10 +171,10 @@ class Window:
                 )
                 if maxed:
                     self.wrapper().maximize()
-                self.with_cursor_position(self.wrapper().set_focus)
+                self.anchored_cursor_wrapper(self.wrapper().set_focus)
             self.get_current_value()
 
-    def with_cursor_position(self, func):
+    def anchored_cursor_wrapper(self, func):
         cursor_pos = pyw.win32api.GetCursorPos()
         func()
         pyw.win32api.SetCursorPos(cursor_pos)
@@ -206,26 +213,47 @@ class Config:
 
     # Enhancement - update this so that name is nested under process_name for process specific name exlcusions
     default_exclusions = {
-        'name': ['Program Manager', '', ' '],
-        'process_name': ['ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe']
+        'name': [''],
+        'name_with_process': [],
+        'process_name': ['ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe'],
     }
 
     def __init__(self, excl: dict=None):
-        # self.path = __file__
-        self.exclusions = Config.default_exclusions
+        self.config_path = path.dirname(path.abspath(__file__))
+        self.config_file = path.join(self.config_path, 'multi_config.json')
+        self.load()
+        self.exclusions = self.data.setdefault('exclusions', Config.default_exclusions)
         if excl:
             self.exclusions.update(excl)
+
+    def load(self):
+        try:
+            with open(self.config_file, 'r+') as file:
+                self.data = json.load(file)
+        except FileNotFoundError:
+            self.data = dict()
+
+    def save(self):
+        with open(self.config_file, 'w+') as file:
+            json.dump(self.data, file, indent=2)
+
+    def exclude_item(self, exclude_type, exclude_window):
+        exclude_descriptions = {
+            'name': f'Hide all Windows with this name?\n\n{exclude_window.name}',
+            'process_name': f'Hide all Windows under this process type?\n\n{exclude_window.process_name}',
+            'name_with_process': f'Hide this particular Window?\n\n{exclude_window.name}\nUnder: {exclude_window.process_name}'
+        }
+        if messagebox.askyesnocancel(
+            'Add Exclusion',
+            exclude_descriptions.get(exclude_type)
+        ):
+            self.add_exclusion(exclude_type, getattr(exclude_window, exclude_type))
+            # exclude_window.master.refresh(manual_call=True)   # redundant - pop up triggers main refresh
 
     def add_exclusion(self, attr: str, value: str):
         excl_list = self.exclusions.get(attr, None)
         if excl_list is not None:
             excl_list.append(value)
-
-    def load(self):
-        pass
-
-    def save(self):
-        pass
 
     def is_excluded(self, window):
         if self.exclusions:
@@ -261,7 +289,7 @@ class GUI(tk.Tk):
         self._job_perpetuate = None
         self._job_update = None
         self._job_minimize = None
-        self.protocol("WM_DELETE_WINDOW", self._seek_and_destroy)
+        self.protocol("WM_DELETE_WINDOW", self._exit_strategy)
         self.windows = dict()
         self.active_transparency = 0.8                          # default active transparency rate
         self.inactive_transparency = 0.1                        # default inactive transparency rate
@@ -292,7 +320,7 @@ class GUI(tk.Tk):
         win_bar.add_checkbutton(label='Stay atop', underline=0, variable=self.stay_on_top)
         win_bar.add_command(label='Set Transparency', command=self._set_transparency)
         win_bar.add_command(label='Tiny', underline=0, command=self.iconify)
-        win_bar.add_command(label='Exit', underline=1, command=self._seek_and_destroy)
+        win_bar.add_command(label='Exit', underline=1, command=self._exit_strategy)
 
         menu_bar.add_cascade(label='Tool', underline=0, menu=win_bar)
         menu_bar.add_cascade(label='Set Refresh Frequency', underline=12, menu=freq_bar)
@@ -302,7 +330,7 @@ class GUI(tk.Tk):
         # keyboard shortcut bindings
         self.bind('<<Alt_L-R>>', lambda: self.refresh(True))
         self.bind('<<Alt_L-S>>', lambda: self.stay_on_top.set(not self.stay_on_top.get()))
-        self.bind('<<Alt_L-X>>', self._seek_and_destroy)
+        self.bind('<<Alt_L-X>>', self._exit_strategy)
         self.bind('<<Alt_L-T>>', self.iconify)
         self.bind('<FocusIn>', self._got_focus)
         self.bind('<FocusOut>', self._lost_focus)
@@ -371,13 +399,14 @@ class GUI(tk.Tk):
         self.wm_attributes('-topmost', state)
         self.wm_attributes('-alpha', self.active_transparency if state else 1)
 
-    def _seek_and_destroy(self):
+    def _exit_strategy(self):
         if self._job_update is not None:
             self.after_cancel(self._job_update)
             self._job_update = None
         if self._job_perpetuate is not None:
             self.after_cancel(self._job_perpetuate)
             self._job_perpetuate = None
+        self.cfg.save()
         self.destroy()
 
     def _change_hover_text(self, value):
@@ -421,18 +450,6 @@ class GUI(tk.Tk):
         self.active_transparency = transparency
         if self.stay_on_top.get():
             self.wm_attributes('-alpha', self.active_transparency)
-
-    def exclude_item(self, exclude_type, exclude_name):
-        exclude_descriptions = {
-            'process_name': 'all Windows under this process type',
-            'name': 'all Windows with this name'
-        }
-        if messagebox.askyesnocancel(
-            'Add Exclusion',
-            f'Hide {exclude_type}?:\n{exclude_name}'
-        ):
-            self.cfg.add_exclusion(exclude_type, exclude_name)
-            self.refresh(manual_call=True)
 
     def perpetuate(self, reset=False):
         if reset:

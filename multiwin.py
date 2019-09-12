@@ -9,17 +9,17 @@ from tkinter import messagebox, simpledialog
 
 # TODO:
 # Features to add:
-#   - move some GUI configs to config file
 #   - Smaller font for ALL display
 #   - add logger
 #   - Some window management - always on top (close and pop up added)
+#   - DONE: move some GUI configs to config file
 #   - DONE: override default, smaller window
 #   - DONE: add config to save lock statuses
 #   - DONE: add exclusion manager, possibly using json.  Explore in-app editing
 
 
+# Store all the meaningful window and associated tk info in one convenient location
 class Window:
-    # Store all the meaningful window and associated tk info in one convenient location
 
     maximized_state = {
         True: 'Maximized',
@@ -43,7 +43,7 @@ class Window:
 
         # Variables
         self.is_locked = tk.BooleanVar()
-        self.is_locked.set(False)
+        self.is_locked.set(self.name_with_process in self.master.cfg.locked_windows)
         self.is_locked.trace_add('write', self._lock_functions)
         self.is_max_text_var = tk.StringVar()
         self.is_maximized = tk.BooleanVar()
@@ -51,8 +51,19 @@ class Window:
         self.is_in_position = tk.IntVar()
         self.is_in_position.trace_add('write', self._rb_pos_change)
 
+    # Surpress function so additional tracers are not triggered during refresh
+    def __surpressed__(function):
+        def surpressed_func(self, *args, **kwargs):
+            self._is_resetting = True
+            function(self, *args, **kwargs)
+            self._is_resetting = False
+        return surpressed_func
+
+    def get_locked_state(self):
+        return tk.DISABLED if self.is_locked.get() else tk.NORMAL
+
+    @__surpressed__
     def create_lock_button(self, process_group):
-        self._is_resetting = True
         self.btn_lock = tk.Checkbutton(
             process_group,
             text=self.short_name,
@@ -63,17 +74,16 @@ class Window:
             relief=tk.GROOVE,
             selectcolor='bisque'
         )
-        self.btn_lock.bind('<Button-2>', lambda evt: self.set_focus_keep_cursor())
+        self.btn_lock.bind('<Button-2>', lambda evt: self.anchored_cursor_wrapper(self.wrapper().set_focus))
         self.btn_lock.bind('<Button-3>', self.binding_close_window)
         self.btn_lock.bind('<Control-Shift-Button-3>', lambda evt, ex_win=self, ex_typ='name_with_process': self.master.cfg.exclude_item(ex_typ, ex_win))
         self.btn_lock.bind('<Control-Button-3>', lambda evt, ex_win=self, ex_typ='process_name': self.master.cfg.exclude_item(ex_typ, ex_win))
         self.btn_lock.bind('<Shift-Button-3>', lambda evt, ex_win=self, ex_typ='name': self.master.cfg.exclude_item(ex_typ, ex_win))
         self.btn_lock.bind('<Enter>', lambda evt, win=self.name: self.master._change_hover_text(win))
         self.btn_lock.bind('<Leave>', lambda evt: self.master._change_hover_text(''))
-        self._is_resetting = False
 
+    @__surpressed__
     def create_maximize_button(self, process_group):
-        self._is_resetting = True
         maxed = self.wrapper().is_maximized()
         self.is_maximized.set(maxed)
         self.is_max_text_var.set(Window.maximized_state.get(maxed))
@@ -83,12 +93,12 @@ class Window:
             variable=self.is_maximized,
             indicatoron=0,
             relief=tk.FLAT,
-            selectcolor='gold'
+            selectcolor='gold',
+            state=self.get_locked_state()
         )
-        self._is_resetting = False
 
+    @__surpressed__
     def create_radio_buttons(self, process_group, monitors):
-        self._is_resetting = True
         self.is_in_position.set(self.where()[0])
         self.rb_displays = [
             tk.Radiobutton(
@@ -99,12 +109,12 @@ class Window:
                 indicatoron=0,
                 relief=tk.FLAT,
                 selectcolor='dodgerblue',    # 'systemHighlight',
+                state=self.get_locked_state(),
                 **GUI.pads
             ) for idx, mon in enumerate(monitors)
         ]
         for idx, radio in enumerate(self.rb_displays):
             radio.bind("<Button-3>", lambda e, i=idx: self.binding_click_all_display(e, self.process_name, i))
-        self._is_resetting = False
 
     def binding_click_all_display(self, event, group, idx):
         # Function to change all display to one group
@@ -120,6 +130,7 @@ class Window:
                 print(e)
             self.master.refresh(manual_call=True)
 
+    # Find out where the window is currently located
     def where(self):
         # Find min/max x value
         x = self.wrapper().rectangle().mid_point().x
@@ -129,6 +140,7 @@ class Window:
             x = Monitor.max_x
 
         # Check through Monitors
+        # returns (index_in_monitor_list, monitor_object, offset_x, offset_y)
         for i, monitor in enumerate(self.master.monitors):
             if x in monitor.x_range:
                 offset_x = (self.info().rectangle.left - monitor.x) / len(monitor.x_range)
@@ -138,13 +150,17 @@ class Window:
 
     def _lock_functions(self, *args):
         # Disable row when item is locked
-        btn_state = tk.DISABLED if self.is_locked.get() else tk.NORMAL
+        if self.is_locked.get():
+            self.master.cfg.locked_windows.append(self.name_with_process)
+        else:
+            self.master.cfg.locked_windows[:] = [win for win in self.master.cfg.locked_windows if win != self.name_with_process]
+        btn_state = self.get_locked_state()
         self.btn_maximize.configure(state=btn_state)
         for rb in self.rb_displays:
             rb.configure(state=btn_state)
 
+    # Tracer for maximize variable change
     def _btn_maximize_trace(self, *args):
-        # Tracer for maximize variable change
         maxed = self.wrapper().is_maximized()
         if not self._is_resetting:
             if maxed:
@@ -156,12 +172,18 @@ class Window:
         else:
             self.is_max_text_var.set(Window.maximized_state.get(maxed))
 
+    # Tracing for radio button position change
     def _rb_pos_change(self, *args):
         if not self._is_resetting:
+
+            # First, check if window is being moved
             cur_pos = self.where()
             pos = self.is_in_position.get()
             maxed = self.wrapper().is_maximized()
             if not pos == cur_pos[0]:
+                # Window is in a different display
+                # Restore and re-maximize window if they are already maximized
+
                 if maxed:
                     self.wrapper().restore()
                 monitor = GUI.monitors[pos]
@@ -172,19 +194,19 @@ class Window:
                 if maxed:
                     self.wrapper().maximize()
                 self.anchored_cursor_wrapper(self.wrapper().set_focus)
-            self.get_current_value()
+                self.get_current_value()
 
+    # Keep cursor in same position while function is executed
     def anchored_cursor_wrapper(self, func):
         cursor_pos = pyw.win32api.GetCursorPos()
         func()
         pyw.win32api.SetCursorPos(cursor_pos)
 
+    # Refresh current maximize status and position display
+    @__surpressed__
     def get_current_value(self):
-        # Refresh current maximize status and position display
-        self._is_resetting = True
         self.is_maximized.set(self.wrapper().is_maximized())
         self.is_in_position.set(self.where()[0])
-        self._is_resetting = False
 
     def info(self):
         return pyw.controls.hwndwrapper.HwndElementInfo(self.hwnd)
@@ -193,8 +215,8 @@ class Window:
         return pyw.controls.hwndwrapper.HwndWrapper(self.hwnd)
 
 
+# Translate meaningful data for Monitor from the windows object
 class Monitor:
-    # Meaningful data for Monitor from the windows object
     min_x = 0
     max_x = 0
 
@@ -211,32 +233,45 @@ class Monitor:
 class Config:
     # Class for advance management of config and exclusions
 
-    # Enhancement - update this so that name is nested under process_name for process specific name exlcusions
-    default_exclusions = {
-        'name': [''],
-        'name_with_process': [],
-        'process_name': ['ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe'],
+    default_config = {
+        'transparency': {
+            'Min': 0.1,
+            'Inactive': 0.2,
+            'Active': 0.8,
+            'Max': 1.0
+        },
+        'exclusions': {
+            'name': [''],
+            'name_with_process': [],
+            'process_name': ['ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe'],
+        },
+        'locked_windows': [],
+        'freq_index': 2,
+        'stay_on_top': False
     }
 
     def __init__(self, excl: dict=None):
         self.config_path = path.dirname(path.abspath(__file__))
         self.config_file = path.join(self.config_path, 'multi_config.json')
         self.load()
-        self.exclusions = self.data.setdefault('exclusions', Config.default_exclusions)
         if excl:
             self.exclusions.update(excl)
 
+    # Load and set default if file not located
     def load(self):
         try:
             with open(self.config_file, 'r+') as file:
                 self.data = json.load(file)
         except FileNotFoundError:
-            self.data = dict()
+            self.data = Config.default_config
+        for attr, val in self.data.items():
+            setattr(self, attr, val)
 
     def save(self):
         with open(self.config_file, 'w+') as file:
             json.dump(self.data, file, indent=2)
 
+    # Pop up window to ask if users want to exclude the window / process / both
     def exclude_item(self, exclude_type, exclude_window):
         exclude_descriptions = {
             'name': f'Hide all Windows with this name?\n\n{exclude_window.name}',
@@ -248,7 +283,7 @@ class Config:
             exclude_descriptions.get(exclude_type)
         ):
             self.add_exclusion(exclude_type, getattr(exclude_window, exclude_type))
-            # exclude_window.master.refresh(manual_call=True)   # redundant - pop up triggers main refresh
+            exclude_window.master.refresh(manual_call=True)
 
     def add_exclusion(self, attr: str, value: str):
         excl_list = self.exclusions.get(attr, None)
@@ -260,6 +295,9 @@ class Config:
             return any(getattr(window, attr, '!No Attribute!') in cond for attr, cond in self.exclusions.items())
         else:
             return False
+
+    def update(self, item_and_value: dict):
+        self.data.update(item_and_value)
 
 
 # main GUI
@@ -281,33 +319,38 @@ class GUI(tk.Tk):
         ('Never', -1)
     ]
     mini_resolution = '120x60'
+    event_threshold = default_min // 2
 
+    # Initial settings
     def __init__(self):
-        # Initial settings
         super().__init__()
         self.title("Multi Window Manager")
         self._job_perpetuate = None
         self._job_update = None
         self._job_minimize = None
+        self._mouse_left = datetime.datetime.now()
+
+        # Load config for Transparency, Exclusions...
+        self.cfg = Config()
         self.protocol("WM_DELETE_WINDOW", self._exit_strategy)
         self.windows = dict()
-        self.active_transparency = 0.8                          # default active transparency rate
-        self.inactive_transparency = 0.1                        # default inactive transparency rate
+        self.transparency_order = sorted(self.cfg.transparency.keys(), key=lambda k: self.cfg.transparency.get(k))
 
         # tk variables and trace bindings
         self.freq_index = tk.IntVar()
         self.freq_index.trace_add('write', self._update_freq)
-        self.freq_index.set(2)                                  # default frequency pair
+        self.freq_index.set(self.cfg.freq_index)
         self.stay_on_top = tk.BooleanVar()
-        self.stay_on_top.set(False)
+        self.stay_on_top.set(self.cfg.stay_on_top)
         self.stay_on_top.trace_add('write', callback=self._update_topmost)
         self.status = tk.StringVar()
-        self.window_expanded_name = ''
+        self.window_hover_expanded_name = ''
 
         # Set up menu bars
         menu_bar = tk.Menu(self)
         freq_bar = tk.Menu(menu_bar, tearoff=0)
         win_bar = tk.Menu(menu_bar, tearoff=0)
+        trans_bar = tk.Menu(menu_bar, tearoff=0)
 
         # Add preset frequencies
         for idx, (name, freq) in enumerate(GUI.preset_freqs):
@@ -317,8 +360,11 @@ class GUI(tk.Tk):
                 variable=self.freq_index,
                 command=lambda i=idx, f=freq: self.set_freq(i, f)
             )
+        for trans in self.transparency_order[:0:-1]:
+            trans_bar.add_command(label=f'Set {trans} Transparency', command=lambda t=trans: self._set_transparency(t))
+
         win_bar.add_checkbutton(label='Stay atop', underline=0, variable=self.stay_on_top)
-        win_bar.add_command(label='Set Transparency', command=self._set_transparency)
+        win_bar.add_cascade(label='Set Transparency', menu=trans_bar)
         win_bar.add_command(label='Tiny', underline=0, command=self.iconify)
         win_bar.add_command(label='Exit', underline=1, command=self._exit_strategy)
 
@@ -349,13 +395,6 @@ class GUI(tk.Tk):
         )
         self.status_bar.pack(expand=True, fill=tk.X, side=tk.BOTTOM)
 
-        # Manage Exclusions
-        self.cfg = Config()
-        # self.process_exclusions = {
-        #     'name': ['Program Manager', '', ' '],
-        #     'process_name': ['ApplicationFrameHost.exe', 'SelfService.exe', 'SystemSettings.exe']
-        # }
-
         # initial start
         self.refresh(manual_call=True)
         self._update_status()
@@ -370,34 +409,37 @@ class GUI(tk.Tk):
     @__toplevel_check
     def _got_focus(self, event):
         if self.stay_on_top.get():
-            self.wm_attributes('-alpha', self.active_transparency)
+            self.wm_attributes('-alpha', self.cfg.transparency.get('Active'))
         else:
-            self.wm_attributes('-alpha', 1.0)
+            self.wm_attributes('-alpha', self.cfg.transparency.get('Max'))
 
     @__toplevel_check
     def _lost_focus(self, event):
         if self.stay_on_top.get():
-            self.wm_attributes('-alpha', self.inactive_transparency)
+            self.wm_attributes('-alpha', self.cfg.transparency.get('Inactive'))
         else:
-            self.wm_attributes('-alpha', self.active_transparency)
+            self.wm_attributes('-alpha', self.cfg.transparency.get('Active'))
 
     @__toplevel_check
     def _mouse_enter(self, event):
         if self._job_minimize is not None:
             self.after_cancel(self._job_minimize)
             self._job_minimize = None
-        self.geometry('')
-        self.refresh(manual_call=True)
+        if (datetime.datetime.now() - self._mouse_left) >= datetime.timedelta(seconds=GUI.event_threshold // 1000):
+            self.geometry('')
+            self.refresh(manual_call=True)
 
     @__toplevel_check
     def _mouse_leave(self, event):
         if self.wm_attributes('-topmost'):
-            self._job_minimize = self.after(ms=10000, func=lambda: self.geometry(GUI.mini_resolution))
+            self._job_minimize = self.after(ms=GUI.event_threshold, func=lambda: self.geometry(GUI.mini_resolution))
+        self._mouse_left = datetime.datetime.now()
 
     def _update_topmost(self, name, index, operation):
         state = self.stay_on_top.get()
+        self.cfg.update({'stay_on_top': state})
         self.wm_attributes('-topmost', state)
-        self.wm_attributes('-alpha', self.active_transparency if state else 1)
+        self.wm_attributes('-alpha', self.cfg.transparency.get('Active') if state else self.cfg.transparency.get('Max'))
 
     def _exit_strategy(self):
         if self._job_update is not None:
@@ -410,12 +452,12 @@ class GUI(tk.Tk):
         self.destroy()
 
     def _change_hover_text(self, value):
-        self.window_expanded_name = value
-        if self.window_expanded_name:
+        self.window_hover_expanded_name = value
+        if self.window_hover_expanded_name:
             self.status_bar.configure(background='light goldenrod')
             self.after_cancel(self._job_update)
             self._job_update = None
-            self.status.set(self.window_expanded_name)
+            self.status.set(self.window_hover_expanded_name)
             self.status_bar.configure(anchor=tk.W)
         else:
             self.status_bar.configure(background='SystemButtonFace')
@@ -432,6 +474,7 @@ class GUI(tk.Tk):
         self._job_update = self.after(ms=delay, func=self._update_status)
 
     def set_freq(self, idx, freq):
+        self.cfg.update({'freq_index': idx})
         self.freq_index.set(idx)
         self.next_refresh = datetime.datetime.strftime(datetime.datetime.now() + datetime.timedelta(seconds=self.refresh_freq // 1000), '%H:%M:%S')
         self.perpetuate(reset=True)
@@ -439,17 +482,24 @@ class GUI(tk.Tk):
     def _update_freq(self, *args):
         self.refresh_freq = GUI.preset_freqs[self.freq_index.get()][1]
 
-    def _set_transparency(self):
+    def _set_transparency(self, selection: str):
+        index = self.transparency_order.index(selection)
+        max_trans = self.cfg.transparency.get(self.transparency_order[min(index + 1, len(self.transparency_order) - 1)])
+        min_trans = self.cfg.transparency.get(self.transparency_order[max(index - 1, 0)])
+
         transparency = simpledialog.askfloat(
-            'Set Transparency Rate',
-            'Set Transparency Rate:\r\nMinimum 0.1\nMaximum of 1.0',
-            initialvalue=self.active_transparency,
-            minvalue=0.1,
-            maxvalue=1.0
+            f'Set {selection} Transparency Rate',
+            f'Set {selection} Transparency Rate:\r\nMinimum {min_trans}\nMaximum of {max_trans}',
+            initialvalue=self.cfg.transparency.get(selection),
+            minvalue=min_trans,
+            maxvalue=max_trans
         )
-        self.active_transparency = transparency
-        if self.stay_on_top.get():
-            self.wm_attributes('-alpha', self.active_transparency)
+        if transparency is not None:
+            self.cfg.transparency[selection] = transparency
+            if self.stay_on_top.get():
+                self.wm_attributes('-alpha', self.cfg.transparency.get('Active'))
+            else:
+                self.wm_attributes('-alpha', self.cfg.transparency.get('Max'))
 
     def perpetuate(self, reset=False):
         if reset:
@@ -485,7 +535,7 @@ class GUI(tk.Tk):
             wins = set(w for w in pyw.findwindows.find_windows())
 
             # Add new to Window instances
-            # This try seem to slow down the process just enough to avoid the error it's trying to catch...
+            # This try seem to slow down the process just enough to avoid the specific error it's trying to catch...
             try:
                 self.windows = {win: self.windows.get(win, Window(win, self)) for win in wins}
             except pyw.controls.hwndwrapper.InvalidWindowHandle as e:
@@ -502,8 +552,6 @@ class GUI(tk.Tk):
         for row, window in enumerate(sorted(self.windows.values(), key=lambda w: (w.process_name, w.name))):
 
             # Exclude certain names/processes
-            # if any(getattr(window, attr) in cond for attr, cond in self.process_exclusions.items()):
-            #     continue
             if self.cfg.is_excluded(window):
                 continue
 
@@ -538,10 +586,6 @@ class GUI(tk.Tk):
             # refresh with latest data
             window.get_current_value()
 
-    # def set_all_display(self, group, idx):
-    #     # function to change all display to one group
-    #     for window in self.process_groups.get(group):
-    #         window.rb_displays[idx].invoke()
 
 if __name__ == '__main__':
     gui = GUI()

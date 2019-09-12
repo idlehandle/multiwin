@@ -398,6 +398,7 @@ class GUI(tk.Tk):
         # initial start
         self.refresh(manual_call=True)
         self._update_status()
+        self._update_topmost(manual_call=True)
 
     # Decorator class for binding check
     def __toplevel_check(function):
@@ -435,9 +436,10 @@ class GUI(tk.Tk):
             self._job_minimize = self.after(ms=GUI.event_threshold, func=lambda: self.geometry(GUI.mini_resolution))
         self._mouse_left = datetime.datetime.now()
 
-    def _update_topmost(self, name, index, operation):
+    def _update_topmost(self, name=None, index=None, operation=None, manual_call=False):
         state = self.stay_on_top.get()
-        self.cfg.update({'stay_on_top': state})
+        if not manual_call:
+            self.cfg.update({'stay_on_top': state})
         self.wm_attributes('-topmost', state)
         self.wm_attributes('-alpha', self.cfg.transparency.get('Active') if state else self.cfg.transparency.get('Max'))
 
